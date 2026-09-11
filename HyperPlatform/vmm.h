@@ -40,7 +40,17 @@ struct ProcessorData {
   struct VmControlStructure* vmxon_region;  //!< VA of a VMXON region
   struct VmControlStructure* vmcs_region;   //!< VA of a VMCS region
   struct EptData* ept_data;                 //!< A pointer to EPT related data
+  void* hook_context;  //!< hypermon: per-CPU state for the hook exit handlers
 };
+
+/// Registers handlers invoked before stock handling of selected VM-exits.
+/// An EPT-violation handler returning true consumes the exit (guest resumes
+/// without RIP adjustment); the MTF handler returning "handled" prevents the
+/// stock bugcheck. Passing nullptr restores stock behavior.
+void VmmSetMonitorExitHandlers(
+    _In_opt_ void* context,
+    _In_opt_ bool (*ept_violation)(void* context, ProcessorData* processor_data),
+    _In_opt_ void (*monitor_trap_flag)(void* context, ProcessorData* processor_data));
 
 /// nt!_KTRAP_FRAME on x86
 struct KtrapFrameX86 {

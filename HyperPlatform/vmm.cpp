@@ -91,7 +91,7 @@ DECLSPEC_NORETURN static void VmmpHandleTripleFault(
 DECLSPEC_NORETURN static void VmmpHandleUnexpectedExit(
     _Inout_ GuestContext *guest_context);
 
-DECLSPEC_NORETURN static void VmmpHandleMonitorTrap(
+static void VmmpHandleMonitorTrap(
     _Inout_ GuestContext *guest_context);
 
 static void VmmpHandleException(_Inout_ GuestContext *guest_context);
@@ -349,9 +349,23 @@ _Use_decl_annotations_ static void VmmpHandleUnexpectedExit(
                                  guest_context->ip, qualification);
 }
 
-// MTF VM-exit
+// hypermon: consumer-registered handlers for selected VM-exits (see
+// VmmSetMonitorExitHandlers in vmm.h). Null = stock behavior.
+namespace {
+void* g_hypermon_handler_context = nullptr;
+bool (*g_hypermon_ept_violation_handler)(void*, ProcessorData*) = nullptr;
+void (*g_hypermon_mtf_handler)(void*, ProcessorData*) = nullptr;
+}  // namespace
+
+// MTF VM-exit. A registered hypermon handler consumes single-step exits it
+// armed itself; an unexpected MTF remains a fatal condition.
 _Use_decl_annotations_ static void VmmpHandleMonitorTrap(
     GuestContext *guest_context) {
+  auto processor_data = guest_context->stack->processor_data;
+  if (g_hypermon_mtf_handler) {
+    g_hypermon_mtf_handler(g_hypermon_handler_context, processor_data);
+    return;
+  }
   VmmpDumpGuestState();
   HYPERPLATFORM_COMMON_BUG_CHECK(HyperPlatformBugCheck::kUnexpectedVmExit,
                                  reinterpret_cast<ULONG_PTR>(guest_context),
@@ -1243,6 +1257,11 @@ _Use_decl_annotations_ static void VmmpHandleVmCall(
           guest_context->stack->processor_data->shared_data;
       VmmpIndicateSuccessfulVmcall(guest_context);
       break;
+    case HypercallNumber::kGetProcessorData:
+      // hypermon: per-CPU ProcessorData (ept_data lives here, per c1 spike).
+      *static_cast<void **>(context) = guest_context->stack->processor_data;
+      VmmpIndicateSuccessfulVmcall(guest_context);
+      break;
   }
 }
 
@@ -1269,8 +1288,12 @@ _Use_decl_annotations_ static void VmmpHandleInvalidateTlbEntry(
 // EXIT_REASON_EPT_VIOLATION
 _Use_decl_annotations_ static void VmmpHandleEptViolation(
     GuestContext *guest_context) {
-  HYPERPLATFORM_PERFORMANCE_MEASURE_THIS_SCOPE();
   auto processor_data = guest_context->stack->processor_data;
+  if (g_hypermon_ept_violation_handler &&
+      g_hypermon_ept_violation_handler(g_hypermon_handler_context,
+                                       processor_data)) {
+    return;
+  }
   EptHandleEptViolation(processor_data->ept_data);
 }
 
@@ -1526,3 +1549,14 @@ _Use_decl_annotations_ static void VmmpInjectInterruption(
 }
 
 }  // extern "C"
+
+// Defined outside the extern "C" region to keep C++ linkage, matching vmm.h.
+void VmmSetMonitorExitHandlers(
+    _In_opt_ void* context,
+    _In_opt_ bool (*ept_violation)(void* context, ProcessorData* processor_data),
+    _In_opt_ void (*monitor_trap_flag)(void* context, ProcessorData* processor_data)) {
+  PAGED_CODE()
+  g_hypermon_handler_context = context;
+  g_hypermon_ept_violation_handler = ept_violation;
+  g_hypermon_mtf_handler = monitor_trap_flag;
+}
