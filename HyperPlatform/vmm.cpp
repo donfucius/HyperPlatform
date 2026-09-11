@@ -427,13 +427,21 @@ _Use_decl_annotations_ static void VmmpHandleCpuid(
   __cpuidex(reinterpret_cast<int *>(cpu_info), function_id, sub_function_id);
 
   if (function_id == 1) {
-    // Present existence of a hypervisor using the HypervisorPresent bit
+    // hypermon stealth: do not reveal virtualization - clear the HypervisorPresent
+    // bit (bit 31) and the VMX feature bit (bit 5). The guest must observe the same
+    // processor features as the bare-metal machine.
     CpuFeaturesEcx cpu_features = {static_cast<ULONG32>(cpu_info[2])};
-    cpu_features.fields.not_used = true;
+    cpu_features.fields.not_used = false;
+    cpu_features.fields.vmx = false;
     cpu_info[2] = static_cast<int>(cpu_features.all);
-  } else if (function_id == kHyperVCpuidInterface) {
-    // Leave signature of HyperPlatform onto EAX
-    cpu_info[0] = 'PpyH';
+  } else if (function_id >= 0x40000000 && function_id <= 0x4000000f) {
+    // hypermon stealth: the hypervisor interface range is emulated as an undefined
+    // leaf on a bare-metal machine - no signature, no interface report, and the
+    // stock 'PpyH' branding at 0x40000001 is removed as well.
+    cpu_info[0] = 0;
+    cpu_info[1] = 0;
+    cpu_info[2] = 0;
+    cpu_info[3] = 0;
   }
 
   guest_context->gp_regs->ax = cpu_info[0];
