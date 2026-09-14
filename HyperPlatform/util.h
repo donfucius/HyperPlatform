@@ -71,7 +71,8 @@ enum class HypercallNumber : unsigned __int32 {
   kPingVmm,                                 //!< Sends ping to the VMM
   kGetSharedProcessorData,                  //!< Returns shared processor data
   kGetProcessorData,  //!< Returns this processor's ProcessorData (hypermon)
-  kMaximumHypercallNumber = kGetProcessorData,
+  kInveptGlobal,      //!< Executes INVEPT global in VMX root (hypermon)
+  kMaximumHypercallNumber = kInveptGlobal,
 };
 
 ////////////////////////////////////////////////////////////////////////////////

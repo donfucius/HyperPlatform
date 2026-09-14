@@ -1262,6 +1262,12 @@ _Use_decl_annotations_ static void VmmpHandleVmCall(
       *static_cast<void **>(context) = guest_context->stack->processor_data;
       VmmpIndicateSuccessfulVmcall(guest_context);
       break;
+    case HypercallNumber::kInveptGlobal:
+      // hypermon: INVEPT is only valid in VMX root - guest-side EPT edits
+      // (shadow-page flips) commit their TLB effect through this hypercall.
+      UtilInveptGlobal();
+      VmmpIndicateSuccessfulVmcall(guest_context);
+      break;
   }
 }
 
