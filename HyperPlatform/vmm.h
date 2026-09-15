@@ -50,7 +50,9 @@ struct ProcessorData {
 void VmmSetMonitorExitHandlers(
     _In_opt_ void* context,
     _In_opt_ bool (*ept_violation)(void* context, ProcessorData* processor_data),
-    _In_opt_ void (*monitor_trap_flag)(void* context, ProcessorData* processor_data));
+    _In_opt_ void (*monitor_trap_flag)(void* context, ProcessorData* processor_data),
+    _In_opt_ void (*cr3_load)(void* context, ProcessorData* processor_data,
+                              unsigned long long new_guest_cr3));
 
 /// nt!_KTRAP_FRAME on x86
 struct KtrapFrameX86 {

@@ -177,6 +177,15 @@ static VmExitHistory g_vmmp_vm_exit_history[kVmmpNumberOfProcessors]
 // implementations
 //
 
+// hypermon: consumer-registered handlers for selected VM-exits (see
+// VmmSetMonitorExitHandlers in vmm.h). Null = stock behavior.
+namespace {
+void* g_hypermon_handler_context = nullptr;
+bool (*g_hypermon_ept_violation_handler)(void*, ProcessorData*) = nullptr;
+void (*g_hypermon_mtf_handler)(void*, ProcessorData*) = nullptr;
+void (*g_hypermon_cr3_load_handler)(void*, ProcessorData*, unsigned long long) = nullptr;
+}  // namespace
+
 // A high level VMX handler called from AsmVmExitHandler().
 // Return true for vmresume, or return false for vmxoff.
 #pragma warning(push)
@@ -274,6 +283,20 @@ _Use_decl_annotations_ static void VmmpHandleVmExit(
       break;
     case VmxExitReason::kCrAccess:
       VmmpHandleCrAccess(guest_context);
+      // hypermon: dispatch CR3 loads after stock emulation (the new value is
+      // in the VMCS guest-CR3 field at this point).
+      {
+        const MovCrQualification cr_qualification = {
+            UtilVmRead(VmcsField::kExitQualification)};
+        if (cr_qualification.fields.access_type == 0 &&
+            cr_qualification.fields.control_register == 3 &&
+            g_hypermon_cr3_load_handler != nullptr) {
+          g_hypermon_cr3_load_handler(
+              g_hypermon_handler_context,
+              guest_context->stack->processor_data,
+              UtilVmRead64(VmcsField::kGuestCr3));
+        }
+      }
       break;
     case VmxExitReason::kDrAccess:
       VmmpHandleDrAccess(guest_context);
@@ -348,14 +371,6 @@ _Use_decl_annotations_ static void VmmpHandleUnexpectedExit(
                                  reinterpret_cast<ULONG_PTR>(guest_context),
                                  guest_context->ip, qualification);
 }
-
-// hypermon: consumer-registered handlers for selected VM-exits (see
-// VmmSetMonitorExitHandlers in vmm.h). Null = stock behavior.
-namespace {
-void* g_hypermon_handler_context = nullptr;
-bool (*g_hypermon_ept_violation_handler)(void*, ProcessorData*) = nullptr;
-void (*g_hypermon_mtf_handler)(void*, ProcessorData*) = nullptr;
-}  // namespace
 
 // MTF VM-exit. A registered hypermon handler consumes single-step exits it
 // armed itself; an unexpected MTF remains a fatal condition.
@@ -1560,9 +1575,12 @@ _Use_decl_annotations_ static void VmmpInjectInterruption(
 void VmmSetMonitorExitHandlers(
     _In_opt_ void* context,
     _In_opt_ bool (*ept_violation)(void* context, ProcessorData* processor_data),
-    _In_opt_ void (*monitor_trap_flag)(void* context, ProcessorData* processor_data)) {
+    _In_opt_ void (*monitor_trap_flag)(void* context, ProcessorData* processor_data),
+    _In_opt_ void (*cr3_load)(void* context, ProcessorData* processor_data,
+                              unsigned long long new_guest_cr3)) {
   PAGED_CODE()
   g_hypermon_handler_context = context;
   g_hypermon_ept_violation_handler = ept_violation;
   g_hypermon_mtf_handler = monitor_trap_flag;
+  g_hypermon_cr3_load_handler = cr3_load;
 }
