@@ -345,7 +345,11 @@ _Use_decl_annotations_ static NTSTATUS VmpStartVm(void *context) {
   HYPERPLATFORM_LOG_INFO("Initializing VMX for the processor %lu.",
                          KeGetCurrentProcessorNumberEx(nullptr));
   const auto ok = AsmInitializeVm(VmpInitializeVm, context);
-  NT_ASSERT(VmpIsHyperPlatformInstalled() == ok);
+  // hypermon: the cpuid-stealth feature intentionally removes the stock
+  // 0x40000001 interface signature, so VmpIsHyperPlatformInstalled() cannot
+  // detect this VMM anymore and the stock NT_ASSERT below would fire on every
+  // successful launch in checked builds. Detection by that leaf is not a
+  // meaningful invariant under stealth, so the assert is dropped.
   if (!ok) {
     return STATUS_UNSUCCESSFUL;
   }
@@ -935,11 +939,39 @@ _Use_decl_annotations_ void VmTermination() {
   PAGED_CODE()
 
   HYPERPLATFORM_LOG_INFO("Uninstalling VMM.");
-  auto status = UtilForEachProcessor(VmpStopVm, nullptr);
-  if (NT_SUCCESS(status)) {
+  // hypermon: keep terminating the remaining processors even when one
+  // processor refuses to stop. Aborting on the first failure would leave the
+  // later processors virtualized with exit handlers pointing into this
+  // driver - and the image is freed as soon as the unload returns, so the
+  // next VM-exit on such a processor would run freed code.
+  auto all_stopped = true;
+  auto last_error = STATUS_SUCCESS;
+  const auto number_of_processors =
+      KeQueryActiveProcessorCountEx(ALL_PROCESSOR_GROUPS);
+  for (ULONG processor_index = 0; processor_index < number_of_processors;
+       ++processor_index) {
+    PROCESSOR_NUMBER processor_number = {};
+    if (!NT_SUCCESS(KeGetProcessorNumberFromIndex(processor_index,
+                                                  &processor_number))) {
+      all_stopped = false;
+      continue;
+    }
+    GROUP_AFFINITY affinity = {};
+    affinity.Group = processor_number.Group;
+    affinity.Mask = 1ull << processor_number.Number;
+    GROUP_AFFINITY previous_affinity = {};
+    KeSetSystemGroupAffinityThread(&affinity, &previous_affinity);
+    if (!NT_SUCCESS(VmpStopVm(nullptr))) {
+      all_stopped = false;
+      last_error = STATUS_UNSUCCESSFUL;
+    }
+    KeRevertToUserGroupAffinityThread(&previous_affinity);
+  }
+  if (all_stopped) {
     HYPERPLATFORM_LOG_INFO("The VMM has been uninstalled.");
   } else {
-    HYPERPLATFORM_LOG_WARN("The VMM has not been uninstalled (%08x).", status);
+    HYPERPLATFORM_LOG_WARN(
+        "The VMM has not been fully uninstalled (%08x).", last_error);
   }
   NT_ASSERT(!VmpIsHyperPlatformInstalled());
 }

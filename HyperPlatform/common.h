@@ -87,7 +87,7 @@
 /// Enables #HYPERPLATFORM_PERFORMANCE_MEASURE_THIS_SCOPE() which measures
 /// an elapsed time of the scope when set to non 0. Enabling it introduces
 /// negative performance impact.
-#define HYPERPLATFORM_PERFORMANCE_ENABLE_PERFCOUNTER 1
+#define HYPERPLATFORM_PERFORMANCE_ENABLE_PERFCOUNTER 0
 
 /// A pool tag
 static constexpr ULONG kHyperPlatformCommonPoolTag = 'PpyH';

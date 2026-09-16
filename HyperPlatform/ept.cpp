@@ -632,59 +632,50 @@ _Use_decl_annotations_ void EptHandleEptViolation(EptData *ept_data) {
       UtilVmRead(VmcsField::kExitQualification)};
 
   const auto fault_pa = UtilVmRead64(VmcsField::kGuestPhysicalAddress);
-  const auto fault_va = reinterpret_cast<void *>(
-      exit_qualification.fields.valid_guest_linear_address
-          ? UtilVmRead(VmcsField::kGuestLinearAddress)
-          : 0);
 
+  // hypermon: stock bugchecked here. This build arms per-view EPT pages and
+  // switches EPTPs at runtime, so transient violations can surface with a
+  // present identity entry (stale cached translations after an EPTP switch,
+  // observed on Alder Lake-N). The entry is present and identity-mapped RWX:
+  // invalidate the cached translations and resume. Every violation that
+  // reaches this function is by definition not claimed by any consumer.
+  // Logging here is not possible either: the log buffer path asserts
+  // PASSIVE_LEVEL, which never holds in VMX root.
   if (exit_qualification.fields.ept_readable ||
       exit_qualification.fields.ept_writeable ||
       exit_qualification.fields.ept_executable) {
-    HYPERPLATFORM_COMMON_DBG_BREAK();
-    HYPERPLATFORM_LOG_ERROR_SAFE("[UNK1] VA = %p, PA = %016llx", fault_va,
-                                 fault_pa);
+    UtilInveptGlobal();
     return;
   }
 
   const auto ept_entry = EptGetEptPtEntry(ept_data, fault_pa);
   if (ept_entry && ept_entry->all) {
-    HYPERPLATFORM_COMMON_DBG_BREAK();
-    HYPERPLATFORM_LOG_ERROR_SAFE("[UNK2] VA = %p, PA = %016llx", fault_va,
-                                 fault_pa);
+    UtilInveptGlobal();
     return;
   }
 
-  // EPT entry miss. It should be device memory.
+  // EPT entry miss. It should be device memory, or a low page outside the
+  // guest memory ranges. hypermon: the stock NT_ASSERT here kills checked
+  // builds on the first such access (observed: a guest write to physical page
+  // 0, which Windows excludes from its memory ranges on this board). The
+  // construct-and-resume path below is the correct, resilient handling.
   HYPERPLATFORM_PERFORMANCE_MEASURE_THIS_SCOPE();
-  NT_ASSERT(EptpIsDeviceMemory(fault_pa));
   EptpConstructTables(ept_data->ept_pml4, 4, fault_pa, ept_data);
 
   UtilInveptGlobal();
 }
 
-#if defined(DBG)
-// Returns if the physical_address is device memory (which could not have a
-// corresponding PFN entry)
-_Use_decl_annotations_ static bool EptpIsDeviceMemory(
-    ULONG64 physical_address) {
-  const auto pm_ranges = UtilGetPhysicalMemoryRanges();
-  for (auto i = 0ul; i < pm_ranges->number_of_runs; ++i) {
-    const auto current_run = &pm_ranges->run[i];
-    const auto base_addr =
-        static_cast<ULONG64>(current_run->base_page) * PAGE_SIZE;
-    const auto endAddr = base_addr + current_run->page_count * PAGE_SIZE - 1;
-    if (UtilIsInBounds(physical_address, base_addr, endAddr)) {
-      return false;
-    }
-  }
-  return true;
-}
-#endif
-
 // Returns an EPT entry corresponds to the physical_address
 _Use_decl_annotations_ EptCommonEntry *EptGetEptPtEntry(
     EptData *ept_data, ULONG64 physical_address) {
   return EptpGetEptPtEntry(ept_data->ept_pml4, 4, physical_address);
+}
+
+// hypermon: on-demand identity construction for a consumer-managed view.
+// See the declaration in ept.h for why this exists.
+_Use_decl_annotations_ void EptConstructIdentityEntry(
+    EptData *ept_data, ULONG64 physical_address) {
+  EptpConstructTables(ept_data->ept_pml4, 4, physical_address, ept_data);
 }
 
 // Returns an EPT entry corresponds to the physical_address

@@ -83,6 +83,17 @@ _IRQL_requires_min_(DISPATCH_LEVEL) void EptHandleEptViolation(
 EptCommonEntry* EptGetEptPtEntry(_In_ EptData* ept_data,
                                  _In_ ULONG64 physical_address);
 
+/// hypermon: constructs the identity-mapped EPT entries for \a
+/// physical_address in \a ept_data on demand (a VMX-root-safe equivalent of
+/// the stock device-memory path, for consumers that manage multiple views:
+/// stock always constructs into the per-CPU clean table, which leaves the
+/// active view missing the entry and re-violating forever). VMX-root safe:
+/// draws sub-tables from ept_data's pre-allocated entries.
+/// @param ept_data   EptData to construct the entries in
+/// @param physical_address   Physical address to map identity
+void EptConstructIdentityEntry(_In_ EptData* ept_data,
+                               _In_ ULONG64 physical_address);
+
 ////////////////////////////////////////////////////////////////////////////////
 //
 // variables
