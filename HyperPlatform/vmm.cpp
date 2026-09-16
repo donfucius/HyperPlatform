@@ -316,7 +316,10 @@ _Use_decl_annotations_ static void VmmpHandleVmExit(
       break;
     case VmxExitReason::kMonitorTrapFlag:
       VmmpHandleMonitorTrap(guest_context);
-      /* UNREACHABLE */
+      break;  // hypermon: the consumer returns normally (stock bugchecked, so
+              // the missing break read as "unreachable") - falling through
+              // ran the GDTR/IDTR emulation on stale MTF qualifications
+              // (0xD1, locked build 2026-09-17)
     case VmxExitReason::kGdtrOrIdtrAccess:
       VmmpHandleGdtrOrIdtrAccess(guest_context);
       break;
