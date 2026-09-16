@@ -638,20 +638,23 @@ _Use_decl_annotations_ static bool VmpSetupVmcs(
 
   VmxSecondaryProcessorBasedControls vm_procctl2_requested = {};
   vm_procctl2_requested.fields.enable_ept = true;
-  // hypermon: descriptor-table exiting stays OFF. Stock emulates SGDT/SIDT by
-  // writing fake table contents to the guest's destination linear address -
-  // when the accessor is USER code (e.g. a .NET runtime sidt), that address
-  // is unmapped under the root CR3 and the emulation page-faults (0xD1,
-  // observed 2026-09-17). Nothing in hypermon consumes GDTR/IDTR exits, and
-  // the real tables are unmodified, so native execution is both safe and the
-  // stealthier answer (guests observe native, untouched tables).
-  vm_procctl2_requested.fields.descriptor_table_exiting = false;
+  // hypermon: descriptor-table exiting is force-cleared after the adjust (see
+  // the note below) - requesting it off here is not enough because the adjust
+  // ORs the capability mask back in.
   vm_procctl2_requested.fields.enable_rdtscp = true;  // for Win10
   vm_procctl2_requested.fields.enable_vpid = true;
   vm_procctl2_requested.fields.enable_invpcid = true;        // for Win10
   vm_procctl2_requested.fields.enable_xsaves_xstors = true;  // for Win10
   VmxSecondaryProcessorBasedControls vm_procctl2 = {VmpAdjustControlValue(
       Msr::kIa32VmxProcBasedCtls2, vm_procctl2_requested.all)};
+  // hypermon: VmpAdjustControlValue ORs in the capability MSR's low word, so
+  // every flexible bit - descriptor_table_exiting included - comes out 1 even
+  // when requested 0 (observed on the locked build: user-mode SIDT then hits
+  // the stock emulation, which faults on the user-mode destination, 0xD1
+  // 2026-09-17). Force it back off; nothing in hypermon consumes GDTR/IDTR
+  // exits and the real tables are unmodified, so native execution is the
+  // stealthier answer.
+  vm_procctl2.fields.descriptor_table_exiting = false;
 
   HYPERPLATFORM_LOG_DEBUG("VmEntryControls                  = %08x",
                           vm_entryctl.all);
