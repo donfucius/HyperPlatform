@@ -9,6 +9,7 @@
 #define HYPERPLATFORM_VMM_H_
 
 #include <ntddk.h>
+#include "ia32_type.h"  // hypermon: GpRegisters for the VMCALL consumer handler
 
 ////////////////////////////////////////////////////////////////////////////////
 //
@@ -53,6 +54,26 @@ void VmmSetMonitorExitHandlers(
     _In_opt_ void (*monitor_trap_flag)(void* context, ProcessorData* processor_data),
     _In_opt_ void (*cr3_load)(void* context, ProcessorData* processor_data,
                               unsigned long long new_guest_cr3));
+
+/// hypermon: outcome of a user-mode (CPL3) VMCALL consumer handler.
+enum class VmcallUserOutcome {
+  kNotHandled,     ///< fall through to stock handling (#UD for user mode)
+  kHandledResume,  ///< guest state fully prepared by the handler; VMRESUME as is
+  kHandledAdvance,  ///< handled; advance RIP past the VMCALL (return semantics)
+};
+
+/// hypermon: registers the consumer for user-mode (CPL3) VMCALL exits. A CPL3
+/// VMCALL's RCX is an API argument, never a hypercall number, so user-mode
+/// VMCALLs are routed here exclusively and MUST NOT fall into the hypercall
+/// number interpretation. The handler sees the guest RIP (at the VMCALL) and
+/// all guest GPRs; it owns guest RIP/VMCS edits for resume semantics. Passing
+/// nullptr restores the stock behavior (#UD for every CPL3 VMCALL).
+void VmmSetVmcallUserHandler(
+    _In_opt_ void* context,
+    _In_opt_ VmcallUserOutcome (*vmcall_user)(void* context,
+                                              ProcessorData* processor_data,
+                                              unsigned long long guest_rip,
+                                              GpRegisters* gp_regs));
 
 /// nt!_KTRAP_FRAME on x86
 struct KtrapFrameX86 {

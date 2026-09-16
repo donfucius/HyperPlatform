@@ -184,6 +184,10 @@ void* g_hypermon_handler_context = nullptr;
 bool (*g_hypermon_ept_violation_handler)(void*, ProcessorData*) = nullptr;
 void (*g_hypermon_mtf_handler)(void*, ProcessorData*) = nullptr;
 void (*g_hypermon_cr3_load_handler)(void*, ProcessorData*, unsigned long long) = nullptr;
+void* g_hypermon_vmcall_user_context = nullptr;
+VmcallUserOutcome (*g_hypermon_vmcall_user_handler)(void*, ProcessorData*,
+                                                    unsigned long long,
+                                                    GpRegisters*) = nullptr;
 }  // namespace
 
 // A high level VMX handler called from AsmVmExitHandler().
@@ -1238,6 +1242,28 @@ _Use_decl_annotations_ static void VmmpHandleVmx(GuestContext *guest_context) {
 // VMCALL
 _Use_decl_annotations_ static void VmmpHandleVmCall(
     GuestContext *guest_context) {
+  // hypermon: a CPL3 VMCALL's RCX is an API argument (a socket handle, a
+  // pointer), never a hypercall number - interpreting it as one could collide
+  // with the hypercall number space. User-mode VMCALLs are therefore routed
+  // exclusively to the consumer handler (network hook traps); sites it does
+  // not claim inject #UD, preserving the "no hypervisor" transparency.
+  if (VmmpGetGuestCpl() != 0) {
+    if (g_hypermon_vmcall_user_handler) {
+      const auto outcome = g_hypermon_vmcall_user_handler(
+          g_hypermon_vmcall_user_context, guest_context->stack->processor_data,
+          guest_context->ip, guest_context->gp_regs);
+      if (outcome == VmcallUserOutcome::kHandledResume) {
+        return;  // guest state fully prepared; VMRESUME as is
+      }
+      if (outcome == VmcallUserOutcome::kHandledAdvance) {
+        VmmpIndicateSuccessfulVmcall(guest_context);
+        return;
+      }
+    }
+    VmmpIndicateUnsuccessfulVmcall(guest_context);
+    return;
+  }
+
   // VMCALL convention for HyperPlatform:
   //  ecx: hyper-call number (always 32bit)
   //  edx: arbitrary context parameter (pointer size)
@@ -1583,4 +1609,15 @@ void VmmSetMonitorExitHandlers(
   g_hypermon_ept_violation_handler = ept_violation;
   g_hypermon_mtf_handler = monitor_trap_flag;
   g_hypermon_cr3_load_handler = cr3_load;
+}
+
+void VmmSetVmcallUserHandler(
+    _In_opt_ void* context,
+    _In_opt_ VmcallUserOutcome (*vmcall_user)(void* context,
+                                              ProcessorData* processor_data,
+                                              unsigned long long guest_rip,
+                                              GpRegisters* gp_regs)) {
+  PAGED_CODE()
+  g_hypermon_vmcall_user_context = context;
+  g_hypermon_vmcall_user_handler = vmcall_user;
 }
