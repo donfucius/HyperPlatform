@@ -137,6 +137,11 @@ void *UtilMemMem(_In_ const void *search_base, _In_ SIZE_T search_size,
 /// @return An address of the symbol or nullptr
 void *UtilGetSystemProcAddress(_In_ const wchar_t *proc_name);
 
+/// hypermon: returns the PTE self-map base resolved at initialization
+/// (0 when unavailable). With KVA Shadow (KPTI) enabled the base is
+/// randomized, so it must never be hardcoded.
+ULONG_PTR UtilGetPteBase();
+
 /// Checks if the system is a PAE-enabled x86 system
 /// @return true if the system is a PAE-enabled x86 system
 bool UtilIsX86Pae();

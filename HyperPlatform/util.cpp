@@ -525,6 +525,11 @@ _Use_decl_annotations_ void *UtilMemMem(const void *search_base,
 }
 
 // A wrapper of MmGetSystemRoutineAddress
+_Use_decl_annotations_ ULONG_PTR UtilGetPteBase() {
+  PAGED_CODE()
+  return g_utilp_pte_base;
+}
+
 _Use_decl_annotations_ void *UtilGetSystemProcAddress(
     const wchar_t *proc_name) {
   PAGED_CODE()
