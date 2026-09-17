@@ -181,7 +181,7 @@ static VmExitHistory g_vmmp_vm_exit_history[kVmmpNumberOfProcessors]
 // VmmSetMonitorExitHandlers in vmm.h). Null = stock behavior.
 namespace {
 void* g_hypermon_handler_context = nullptr;
-bool (*g_hypermon_ept_violation_handler)(void*, ProcessorData*) = nullptr;
+bool (*g_hypermon_ept_violation_handler)(void*, ProcessorData*, GpRegisters*) = nullptr;
 void (*g_hypermon_mtf_handler)(void*, ProcessorData*) = nullptr;
 void (*g_hypermon_cr3_load_handler)(void*, ProcessorData*, unsigned long long) = nullptr;
 void* g_hypermon_vmcall_user_context = nullptr;
@@ -1341,7 +1341,8 @@ _Use_decl_annotations_ static void VmmpHandleEptViolation(
   auto processor_data = guest_context->stack->processor_data;
   if (g_hypermon_ept_violation_handler &&
       g_hypermon_ept_violation_handler(g_hypermon_handler_context,
-                                       processor_data)) {
+                                       processor_data,
+                                       guest_context->gp_regs)) {
     return;
   }
   EptHandleEptViolation(processor_data->ept_data);
@@ -1603,7 +1604,8 @@ _Use_decl_annotations_ static void VmmpInjectInterruption(
 // Defined outside the extern "C" region to keep C++ linkage, matching vmm.h.
 void VmmSetMonitorExitHandlers(
     _In_opt_ void* context,
-    _In_opt_ bool (*ept_violation)(void* context, ProcessorData* processor_data),
+    _In_opt_ bool (*ept_violation)(void* context, ProcessorData* processor_data,
+                                   GpRegisters* gp_regs),
     _In_opt_ void (*monitor_trap_flag)(void* context, ProcessorData* processor_data),
     _In_opt_ void (*cr3_load)(void* context, ProcessorData* processor_data,
                               unsigned long long new_guest_cr3)) {

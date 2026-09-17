@@ -47,10 +47,13 @@ struct ProcessorData {
 /// Registers handlers invoked before stock handling of selected VM-exits.
 /// An EPT-violation handler returning true consumes the exit (guest resumes
 /// without RIP adjustment); the MTF handler returning "handled" prevents the
-/// stock bugcheck. Passing nullptr restores stock behavior.
+/// stock bugcheck. Passing nullptr restores stock behavior. The EPT-violation
+/// handler receives the guest GPRs saved at the exit (hypermon: the inbound
+/// post trap reads RAX, the API return value, from this frame).
 void VmmSetMonitorExitHandlers(
     _In_opt_ void* context,
-    _In_opt_ bool (*ept_violation)(void* context, ProcessorData* processor_data),
+    _In_opt_ bool (*ept_violation)(void* context, ProcessorData* processor_data,
+                                   GpRegisters* gp_regs),
     _In_opt_ void (*monitor_trap_flag)(void* context, ProcessorData* processor_data),
     _In_opt_ void (*cr3_load)(void* context, ProcessorData* processor_data,
                               unsigned long long new_guest_cr3));
