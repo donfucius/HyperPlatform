@@ -42,6 +42,9 @@ struct ProcessorData {
   struct VmControlStructure* vmcs_region;   //!< VA of a VMCS region
   struct EptData* ept_data;                 //!< A pointer to EPT related data
   void* hook_context;  //!< hypermon: per-CPU state for the hook exit handlers
+  void* active_ept_data;  //!< hypermon: the ACTIVE view's table (the view
+                          //!< switch maintains it; misconfig diagnostics
+                          //!< read the entry through this table)
 };
 
 /// Registers handlers invoked before stock handling of selected VM-exits.

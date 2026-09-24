@@ -1356,9 +1356,17 @@ _Use_decl_annotations_ static void VmmpHandleEptMisconfig(
   const auto fault_address = UtilVmRead(VmcsField::kGuestPhysicalAddress);
   const auto ept_pt_entry = EptGetEptPtEntry(
       guest_context->stack->processor_data->ept_data, fault_address);
-  HYPERPLATFORM_COMMON_BUG_CHECK(HyperPlatformBugCheck::kEptMisconfigVmExit,
-                                 fault_address,
-                                 reinterpret_cast<ULONG_PTR>(ept_pt_entry), 0);
+  // hypermon: the crash-relevant entry lives in the ACTIVE view's table (the
+  // monitored view for targeted traps); dump its VALUE in P4.
+  auto *active_ept = reinterpret_cast<EptData *>(
+      guest_context->stack->processor_data->active_ept_data
+          ? guest_context->stack->processor_data->active_ept_data
+          : guest_context->stack->processor_data->ept_data);
+  const auto active_pt_entry = EptGetEptPtEntry(active_ept, fault_address);
+  HYPERPLATFORM_COMMON_BUG_CHECK(
+      HyperPlatformBugCheck::kEptMisconfigVmExit, fault_address,
+      reinterpret_cast<ULONG_PTR>(ept_pt_entry),
+      active_pt_entry ? active_pt_entry->all : 0);
 }
 
 // Selects a register to be used based on the index
