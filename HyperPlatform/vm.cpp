@@ -276,36 +276,13 @@ _Use_decl_annotations_ static void *VmpBuildMsrBitmap() {
   }
   RtlZeroMemory(msr_bitmap, PAGE_SIZE);
 
-  // Activate VM-exit for RDMSR against all MSRs
-  const auto bitmap_read_low = static_cast<UCHAR *>(msr_bitmap);
-  const auto bitmap_read_high = bitmap_read_low + 1024;
-  RtlFillMemory(bitmap_read_low, 1024, 0xff);   // read        0 -     1fff
-  RtlFillMemory(bitmap_read_high, 1024, 0xff);  // read c0000000 - c0001fff
-
-  // Ignore IA32_MPERF (000000e7) and IA32_APERF (000000e8)
-  RTL_BITMAP bitmap_read_low_header = {};
-  RtlInitializeBitMap(&bitmap_read_low_header,
-                      reinterpret_cast<PULONG>(bitmap_read_low), 1024 * 8);
-  RtlClearBits(&bitmap_read_low_header, 0xe7, 2);
-
-  // Checks MSRs that cause #GP from 0 to 0xfff, and ignore all of them
-  for (auto msr = 0ul; msr < 0x1000; ++msr) {
-    __try {
-      UtilReadMsr(static_cast<Msr>(msr));
-
-#pragma prefast(suppress : __WARNING_EXCEPTIONEXECUTEHANDLER, "Catch all.");
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-      RtlClearBits(&bitmap_read_low_header, msr, 1);
-    }
-  }
-
-  // Ignore IA32_GS_BASE (c0000101) and IA32_KERNEL_GS_BASE (c0000102)
-  RTL_BITMAP bitmap_read_high_header = {};
-  RtlInitializeBitMap(&bitmap_read_high_header,
-                      reinterpret_cast<PULONG>(bitmap_read_high),
-                      1024 * CHAR_BIT);
-  RtlClearBits(&bitmap_read_high_header, 0x101, 2);
-
+  // Keep every RDMSR/WRMSR native: an all-zero bitmap issues no VM-exits.
+  // Hypermon's MSR handler is a pure pass-through (it fakes no values), so
+  // intercepting each guest read had no functional upside, while making
+  // every PPM/thermal/frequency read (intelppm, thousands per second) pay
+  // a VM-exit and squeezing the interrupt-timing budget. That tax is the
+  // prime suspect for the 0x133/0x101 watchdog crashes on this platform
+  // (see .docs/soak-plan.md, audit (1)).
   return msr_bitmap;
 }
 
