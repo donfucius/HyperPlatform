@@ -81,6 +81,17 @@ void VmmSetVmcallUserHandler(
                                               unsigned long long guest_rip,
                                               GpRegisters* gp_regs));
 
+/// hypermon: root-telemetry hooks bracketing every root episode (called from
+/// VmmVmExitHandler, inside VMX-root). Both callbacks must obey VMX-root
+/// discipline (no allocation, no locks, no paging, no faulting, no logging);
+/// they exist so the guest cannot be trusted to observe root residence (the
+/// 2026-10-15 four-CPU freeze had no surviving guest to ask). Passing
+/// nullptr disables the hooks.
+void VmmSetRootTelemetryCallbacks(
+    _In_opt_ void (*root_enter)(ProcessorData* processor_data),
+    _In_opt_ void (*root_exit)(ProcessorData* processor_data,
+                               unsigned long exit_reason, bool vm_continue));
+
 /// nt!_KTRAP_FRAME on x86
 struct KtrapFrameX86 {
   ULONG reserved1[26];

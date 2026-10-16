@@ -188,6 +188,10 @@ void* g_hypermon_vmcall_user_context = nullptr;
 VmcallUserOutcome (*g_hypermon_vmcall_user_handler)(void*, ProcessorData*,
                                                     unsigned long long,
                                                     GpRegisters*) = nullptr;
+// hypermon: root-telemetry hooks (see VmmSetRootTelemetryCallbacks). Both
+// may be null; the branch is cheaper than an unconditional call tail.
+void (*g_hypermon_root_enter)(ProcessorData*) = nullptr;
+void (*g_hypermon_root_exit)(ProcessorData*, unsigned long, bool) = nullptr;
 }  // namespace
 
 // A high level VMX handler called from AsmVmExitHandler().
@@ -220,6 +224,9 @@ _Use_decl_annotations_ bool __stdcall VmmVmExitHandler(VmmInitialStack *stack) {
       guest_context.ip + UtilVmRead(VmcsField::kVmExitInstructionLen);
 
   // Dispatch the current VM-exit event
+  if (g_hypermon_root_enter) {
+    g_hypermon_root_enter(guest_context.stack->processor_data);
+  }
   VmmpHandleVmExit(&guest_context);
 
   // See: Guidelines for Use of the INVVPID Instruction, and Guidelines for Use
@@ -237,6 +244,12 @@ _Use_decl_annotations_ bool __stdcall VmmVmExitHandler(VmmInitialStack *stack) {
   // Apply possibly updated CR8 by the handler
   if (IsX64()) {
     __writecr8(guest_context.cr8);
+  }
+  if (g_hypermon_root_exit) {
+    g_hypermon_root_exit(guest_context.stack->processor_data,
+                         static_cast<unsigned long>(
+                             UtilVmRead(VmcsField::kVmExitReason)),
+                         guest_context.vm_continue);
   }
   return guest_context.vm_continue;
 }
@@ -1633,4 +1646,13 @@ void VmmSetVmcallUserHandler(
   PAGED_CODE()
   g_hypermon_vmcall_user_context = context;
   g_hypermon_vmcall_user_handler = vmcall_user;
+}
+
+void VmmSetRootTelemetryCallbacks(
+    _In_opt_ void (*root_enter)(ProcessorData* processor_data),
+    _In_opt_ void (*root_exit)(ProcessorData* processor_data,
+                               unsigned long exit_reason, bool vm_continue)) {
+  PAGED_CODE()
+  g_hypermon_root_enter = root_enter;
+  g_hypermon_root_exit = root_exit;
 }
