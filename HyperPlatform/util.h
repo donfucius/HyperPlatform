@@ -259,6 +259,14 @@ void UtilWriteMsr64(_In_ Msr msr, _In_ ULONG64 value);
 /// @return A result of the INVEPT instruction
 VmxStatus UtilInveptGlobal();
 
+/// Executes the INVEPT instruction and invalidates EPT entry cache
+/// associated with the given EPT pointer (type 1; hypercalls aside, only
+/// valid in VMX root)
+/// @param ept_pointer An EPT pointer whose associated translations are
+///        invalidated on the current logical processor
+/// @return A result of the INVEPT instruction
+VmxStatus UtilInveptSingleContext(_In_ ULONG64 ept_pointer);
+
 /// Executes the INVVPID instruction (type 0)
 /// @return A result of the INVVPID instruction
 VmxStatus UtilInvvpidIndividualAddress(_In_ USHORT vpid, _In_ void *address);

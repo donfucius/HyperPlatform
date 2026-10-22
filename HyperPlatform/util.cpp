@@ -825,6 +825,15 @@ _Use_decl_annotations_ void UtilWriteMsr64(Msr msr, ULONG64 value) {
       AsmInvept(InvEptType::kGlobalInvalidation, &desc));
 }
 
+// Executes the INVEPT instruction and invalidates EPT entry cache associated
+// with the given EPT pointer (type 1). Only valid in VMX root.
+/*_Use_decl_annotations_*/ VmxStatus UtilInveptSingleContext(ULONG64 ept_pointer) {
+  InvEptDescriptor desc = {};
+  desc.ept_pointer.all = ept_pointer;
+  return static_cast<VmxStatus>(
+      AsmInvept(InvEptType::kSingleContextInvalidation, &desc));
+}
+
 // Executes the INVVPID instruction (type 0)
 _Use_decl_annotations_ VmxStatus UtilInvvpidIndividualAddress(USHORT vpid,
                                                               void *address) {
