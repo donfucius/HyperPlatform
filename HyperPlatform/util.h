@@ -72,7 +72,10 @@ enum class HypercallNumber : unsigned __int32 {
   kGetSharedProcessorData,                  //!< Returns shared processor data
   kGetProcessorData,  //!< Returns this processor's ProcessorData (hypermon)
   kInveptGlobal,      //!< Executes INVEPT global in VMX root (hypermon)
-  kMaximumHypercallNumber = kInveptGlobal,
+  kRearmPebRead,      //!< Synchronous stand-down read re-arm (hypermon,
+                      //!< peb-stand-down D0b: the registered handler commits
+                      //!< this CPU and publishes the remote-commit request)
+  kMaximumHypercallNumber = kRearmPebRead,
 };
 
 ////////////////////////////////////////////////////////////////////////////////

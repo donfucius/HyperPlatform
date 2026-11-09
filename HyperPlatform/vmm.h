@@ -81,6 +81,16 @@ void VmmSetVmcallUserHandler(
                                               unsigned long long guest_rip,
                                               GpRegisters* gp_regs));
 
+/// hypermon: registers the consumer of the kRearmPebRead hypercall
+/// (peb-stand-down D0b). The context is the guest-kernel caller's pointer to
+/// its request - kernel VA is directly accessible in VMX root (the same
+/// contract as the other hypercalls). The handler commits the re-arm on THIS
+/// CPU before returning (capture starts at VMRESUME) and publishes the
+/// remote-commit request; the outcome reports whether the local commit
+/// applied. Passing nullptr disables the hypercall (an attempted call
+/// surfaces to the caller as an unsuccessful VMCALL, not #UD injection).
+void VmmSetRearmHypercallHandler(_In_opt_ bool (*rearm)(void* context));
+
 /// hypermon: root-telemetry hooks bracketing every root episode (called from
 /// VmmVmExitHandler, inside VMX-root). Both callbacks must obey VMX-root
 /// discipline (no allocation, no locks, no paging, no faulting, no logging);

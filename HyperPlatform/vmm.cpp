@@ -188,6 +188,9 @@ void* g_hypermon_vmcall_user_context = nullptr;
 VmcallUserOutcome (*g_hypermon_vmcall_user_handler)(void*, ProcessorData*,
                                                     unsigned long long,
                                                     GpRegisters*) = nullptr;
+// hypermon: kRearmPebRead consumer (peb-stand-down D0b); null = the hypercall
+// reports unsuccessful instead of injecting #UD (see VmmSetRearmHypercallHandler).
+bool (*g_hypermon_rearm_handler)(void*) = nullptr;
 // hypermon: root-telemetry hooks (see VmmSetRootTelemetryCallbacks). Both
 // may be null; the branch is cheaper than an unconditional call tail.
 void (*g_hypermon_root_enter)(ProcessorData*) = nullptr;
@@ -1325,6 +1328,20 @@ _Use_decl_annotations_ static void VmmpHandleVmCall(
       UtilInveptGlobal();
       VmmpIndicateSuccessfulVmcall(guest_context);
       break;
+    case HypercallNumber::kRearmPebRead:
+      // hypermon: synchronous stand-down read re-arm (peb-stand-down D0b).
+      // The handler commits this CPU before returning; whether the local
+      // commit applied is reported through the request, not through the
+      // VMCALL status (a page not in stand-down is a normal no-op call).
+      // Without a registered handler the hypercall fails soft (unsuccessful
+      // VMCALL, no #UD): the detour glue degrades to the published-bound
+      // path instead of faulting in guest kernel context.
+      if (g_hypermon_rearm_handler && g_hypermon_rearm_handler(context)) {
+        VmmpIndicateSuccessfulVmcall(guest_context);
+      } else {
+        VmmpIndicateUnsuccessfulVmcall(guest_context);
+      }
+      break;
   }
 }
 
@@ -1646,6 +1663,11 @@ void VmmSetVmcallUserHandler(
   PAGED_CODE()
   g_hypermon_vmcall_user_context = context;
   g_hypermon_vmcall_user_handler = vmcall_user;
+}
+
+void VmmSetRearmHypercallHandler(_In_opt_ bool (*rearm)(void* context)) {
+  PAGED_CODE()
+  g_hypermon_rearm_handler = rearm;
 }
 
 void VmmSetRootTelemetryCallbacks(
