@@ -1325,8 +1325,11 @@ _Use_decl_annotations_ static void VmmpHandleVmCall(
     case HypercallNumber::kInveptGlobal:
       // hypermon: INVEPT is only valid in VMX root - guest-side EPT edits
       // (shadow-page flips) commit their TLB effect through this hypercall.
-      UtilInveptGlobal();
-      VmmpIndicateSuccessfulVmcall(guest_context);
+      if (UtilInveptGlobal() == VmxStatus::kOk) {
+        VmmpIndicateSuccessfulVmcall(guest_context);
+      } else {
+        VmmpIndicateUnsuccessfulVmcall(guest_context);
+      }
       break;
     case HypercallNumber::kRearmPebRead:
       // hypermon: synchronous stand-down read re-arm (peb-stand-down D0b).
