@@ -153,6 +153,7 @@ static void VmmpIndicateUnsuccessfulVmcall(_In_ GuestContext *guest_context);
 static void VmmpHandleVmCallTermination(_In_ GuestContext *guest_context,
                                         _Inout_ void *context);
 
+static void VmmpPrepareTermination(GuestContext *guest_context);
 static UCHAR VmmpGetGuestCpl();
 
 static void VmmpInjectInterruption(_In_ InterruptionType interruption_type,
@@ -202,6 +203,34 @@ void (*g_hypermon_root_exit)(ProcessorData*, unsigned long, bool) = nullptr;
 #pragma warning(push)
 #pragma warning(disable : 28167)
 _Use_decl_annotations_ bool __stdcall VmmVmExitHandler(VmmInitialStack *stack) {
+  auto *const owner = stack->processor_data;
+  if (owner->stop_state == static_cast<LONG>(VmStopState::kArmed) &&
+      stack->gp_regs.cx == static_cast<ULONG_PTR>(HypercallNumber::kTerminateVmm) &&
+      stack->gp_regs.dx == 0 &&
+      VmExitInformation{static_cast<ULONG32>(UtilVmRead(VmcsField::kVmExitReason))}.fields.reason ==
+          VmxExitReason::kVmcall && VmmpGetGuestCpl() == 0) {
+    // Checked stop uses the nonpaged owner and architectural state without
+    // copying to a guest-provided address or entering generic dispatch.
+    GuestContext guest_context = {stack, UtilVmRead(VmcsField::kGuestRflags),
+                                 UtilVmRead(VmcsField::kGuestRip), 0, 0, true};
+    guest_context.gp_regs->sp = UtilVmRead(VmcsField::kGuestRsp);
+    owner->stop_guest_cr0 = UtilVmRead(VmcsField::kGuestCr0);
+    owner->stop_guest_cr4 = UtilVmRead(VmcsField::kGuestCr4);
+    const auto guest_cr3 = UtilVmRead(VmcsField::kGuestCr3);
+    if (IsX64()) {
+      UtilWriteMsr64(Msr::kIa32FsBase, UtilVmRead(VmcsField::kGuestFsBase));
+      UtilWriteMsr64(Msr::kIa32GsBase, UtilVmRead(VmcsField::kGuestGsBase));
+    }
+    VmmpPrepareTermination(&guest_context);
+    UtilInveptGlobal();
+    UtilInvvpidAllContext();
+    InterlockedExchange(&owner->stop_state, static_cast<LONG>(VmStopState::kPrepared));
+    // The pinned build maps the driver and VMM stack in the active guest's
+    // kernel address space. Resume the management thread in that CR3.
+    __writecr3(guest_cr3);
+    return false;
+  }
+
   // Save guest's context and raise IRQL as quick as possible
   const auto guest_irql = KeGetCurrentIrql();
   const auto guest_cr8 = IsX64() ? __readcr8() : 0;
@@ -1301,7 +1330,7 @@ _Use_decl_annotations_ static void VmmpHandleVmCall(
   switch (hypercall_number) {
     case HypercallNumber::kTerminateVmm:
       // Unloading requested. This VMCALL is allowed to execute only from CPL=0
-      if (VmmpGetGuestCpl() == 0) {
+      if (context && VmmpGetGuestCpl() == 0) {
         VmmpHandleVmCallTermination(guest_context, context);
       } else {
         VmmpIndicateUnsuccessfulVmcall(guest_context);
@@ -1547,6 +1576,13 @@ _Use_decl_annotations_ static void VmmpIndicateUnsuccessfulVmcall(
 // Handles an unloading request
 _Use_decl_annotations_ static void VmmpHandleVmCallTermination(
     GuestContext *guest_context, void *context) {
+  // Standalone HyperPlatform retains its original VMCALL result contract.
+  const auto result_ptr = static_cast<ProcessorData **>(context);
+  *result_ptr = guest_context->stack->processor_data;
+  VmmpPrepareTermination(guest_context);
+}
+
+static void VmmpPrepareTermination(GuestContext *guest_context) {
   // The processor sets ffff to limits of IDT and GDT when VM-exit occurred.
   // It is not correct value but fine to ignore since vmresume loads correct
   // values from VMCS. But here, we are going to skip vmresume and simply
@@ -1560,12 +1596,6 @@ _Use_decl_annotations_ static void VmmpHandleVmCallTermination(
   Idtr idtr = {static_cast<USHORT>(idt_limit), idt_base};
   __lgdt(&gdtr);
   __lidt(&idtr);
-
-  // Store an address of the management structure to the context parameter
-  const auto result_ptr = static_cast<ProcessorData **>(context);
-  *result_ptr = guest_context->stack->processor_data;
-  HYPERPLATFORM_LOG_DEBUG_SAFE("Context at %p %p", context,
-                               guest_context->stack->processor_data);
 
   // Set rip to the next instruction of VMCALL
   const auto exit_instruction_length =

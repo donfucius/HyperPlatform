@@ -31,7 +31,9 @@ extern "C" {
 // prototypes
 //
 
-_IRQL_requires_max_(PASSIVE_LEVEL) NTSTATUS HotplugCallbackInitialization();
+// Fixed-view clients cannot safely admit a CPU without a matching view.
+_IRQL_requires_max_(PASSIVE_LEVEL) NTSTATUS
+    HotplugCallbackInitialization(bool fixed_topology = false);
 
 _IRQL_requires_max_(PASSIVE_LEVEL) void HotplugCallbackTermination();
 

@@ -50,6 +50,9 @@ void __stdcall AsmVmmEntryPoint();
 unsigned char __stdcall AsmVmxCall(_In_ ULONG_PTR hypercall_number,
                                    _In_opt_ void *context);
 
+/// Executes VMXOFF on a processor that entered VMX root without launching.
+bool __stdcall AsmVmxOff();
+
 /// Writes to GDT
 /// @param gdtr   A value to write
 void __stdcall AsmWriteGDT(_In_ const Gdtr *gdtr);

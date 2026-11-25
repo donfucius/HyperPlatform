@@ -45,7 +45,12 @@ struct ProcessorData {
   void* active_ept_data;  //!< hypermon: the ACTIVE view's table (the view
                           //!< switch maintains it; misconfig diagnostics
                           //!< read the entry through this table)
+  volatile LONG stop_state;
+  ULONG_PTR stop_guest_cr0;
+  ULONG_PTR stop_guest_cr4;
 };
+
+enum class VmStopState : LONG { kIdle, kArmed, kPrepared };
 
 /// Registers handlers invoked before stock handling of selected VM-exits.
 /// An EPT-violation handler returning true consumes the exit (guest resumes

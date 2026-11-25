@@ -239,6 +239,12 @@ errorWithCode:
     ret
 AsmVmxCall ENDP
 
+AsmVmxOff PROC
+    vmxoff
+    seta al                     ; succeeds if neither CF nor ZF was set
+    ret
+AsmVmxOff ENDP
+
 ; void __stdcall AsmWriteGDT(_In_ const GDTR *gdtr);
 AsmWriteGDT PROC gdtr
     mov ecx, gdtr

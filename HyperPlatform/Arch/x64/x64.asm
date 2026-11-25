@@ -215,11 +215,11 @@ exitVm:
     vmxoff
     jz vmxError             ; if (ZF) jmp
     jc vmxError             ; if (CF) jmp
-    push rax
-    popfq                   ; rflags <= GurstFlags
-    mov rsp, rdx            ; rsp <= GuestRsp
+    mov rsp, rdx            ; use the guest stack before restoring guest IF
     push rcx
-    ret                     ; jmp AddressToReturn
+    push rax
+    popfq
+    ret                     ; continue after VMCALL on the guest stack
 
 vmxError:
     ; Diagnose a critical error
@@ -250,6 +250,12 @@ errorWithCode:
     mov rax, VMX_ERROR_WITH_STATUS
     ret
 AsmVmxCall ENDP
+
+AsmVmxOff PROC
+    vmxoff
+    seta al                     ; succeeds if neither CF nor ZF was set
+    ret
+AsmVmxOff ENDP
 
 ; void __stdcall AsmWriteGDT(_In_ const GDTR *gdtr);
 AsmWriteGDT PROC

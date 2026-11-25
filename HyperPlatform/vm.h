@@ -10,6 +10,25 @@
 
 #include <ntddk.h>
 
+struct ProcessorData;
+
+enum class VmProcessorState { kUnowned, kVmxRoot, kVmxGuest, kRetired };
+
+struct VmProcessorOwner {
+  PROCESSOR_NUMBER number;
+  VmProcessorState state;
+  ProcessorData *data;
+  ULONG_PTR native_cr0;
+  ULONG_PTR native_cr4;
+};
+
+// Serialized by the embedding driver. Offline CPUs remain in the owner roster.
+struct VmSession {
+  static constexpr ULONG kCapacity = 64;
+  VmProcessorOwner processors[kCapacity];
+  ULONG processor_count;
+};
+
 extern "C" {
 ////////////////////////////////////////////////////////////////////////////////
 //
@@ -42,6 +61,17 @@ _IRQL_requires_max_(PASSIVE_LEVEL) NTSTATUS VmInitialization();
 
 /// De-virtualize all processors
 _IRQL_requires_max_(PASSIVE_LEVEL) void VmTermination();
+
+/// The session receives partial acquisition on failure and must retire it.
+_IRQL_requires_(PASSIVE_LEVEL) NTSTATUS VmStartSession(_Inout_ VmSession *session);
+
+/// Success confirms that the recorded processor returned outside VMX. Its
+/// allocation stays owned by the session until aggregate release.
+_IRQL_requires_(PASSIVE_LEVEL) NTSTATUS
+    VmStopSessionProcessor(_Inout_ VmProcessorOwner *processor);
+
+/// Releases the owner tokens only after every acquired processor retired.
+_IRQL_requires_(PASSIVE_LEVEL) NTSTATUS VmReleaseSession(_Inout_ VmSession *session);
 
 /// Virtualizes the specified processor
 /// @param proc_num   A processor number to virtualize

@@ -38,6 +38,11 @@ extern "C" {
 
 _IRQL_requires_max_(PASSIVE_LEVEL) static bool VmpIsVmxAvailable();
 
+struct VmStartContext {
+  SharedProcessorData *shared_data;
+  VmProcessorOwner *owner;
+};
+
 _IRQL_requires_max_(PASSIVE_LEVEL) static NTSTATUS
     VmpSetLockBitCallback(_In_opt_ void *context);
 
@@ -50,6 +55,9 @@ _IRQL_requires_max_(PASSIVE_LEVEL) static UCHAR *VmpBuildIoBitmaps();
 
 _IRQL_requires_max_(PASSIVE_LEVEL) static NTSTATUS
     VmpStartVm(_In_opt_ void *context);
+
+_IRQL_requires_max_(PASSIVE_LEVEL) static NTSTATUS VmpStartVmOnCurrentCpu(
+    _In_ SharedProcessorData *shared_data, _Inout_opt_ VmProcessorOwner *owner);
 
 _IRQL_requires_max_(PASSIVE_LEVEL) static void VmpInitializeVm(
     _In_ ULONG_PTR guest_stack_pointer,
@@ -92,19 +100,23 @@ _IRQL_requires_max_(PASSIVE_LEVEL) static void VmpFreeProcessorData(
     _In_opt_ ProcessorData *processor_data);
 
 _IRQL_requires_max_(PASSIVE_LEVEL) static void VmpFreeSharedData(
-    _In_ ProcessorData *processor_data);
+    _In_ SharedProcessorData *shared_data);
 
 _IRQL_requires_max_(PASSIVE_LEVEL) static bool VmpIsHyperPlatformInstalled();
 
 #if defined(ALLOC_PRAGMA)
 #pragma alloc_text(PAGE, VmInitialization)
 #pragma alloc_text(PAGE, VmTermination)
+#pragma alloc_text(PAGE, VmStartSession)
+#pragma alloc_text(PAGE, VmStopSessionProcessor)
+#pragma alloc_text(PAGE, VmReleaseSession)
 #pragma alloc_text(PAGE, VmpIsVmxAvailable)
 #pragma alloc_text(PAGE, VmpSetLockBitCallback)
 #pragma alloc_text(PAGE, VmpInitializeSharedData)
 #pragma alloc_text(PAGE, VmpBuildMsrBitmap)
 #pragma alloc_text(PAGE, VmpBuildIoBitmaps)
 #pragma alloc_text(PAGE, VmpStartVm)
+#pragma alloc_text(PAGE, VmpStartVmOnCurrentCpu)
 #pragma alloc_text(PAGE, VmpInitializeVm)
 #pragma alloc_text(PAGE, VmpEnterVmxMode)
 #pragma alloc_text(PAGE, VmpInitializeVmcs)
@@ -161,11 +173,153 @@ _Use_decl_annotations_ NTSTATUS VmInitialization() {
 
   // Virtualize all processors
   auto status = UtilForEachProcessor(VmpStartVm, shared_data);
+  VmpFreeSharedData(shared_data);
   if (!NT_SUCCESS(status)) {
     UtilForEachProcessor(VmpStopVm, nullptr);
     return status;
   }
   return status;
+}
+
+static bool VmpIsCurrentProcessor(const PROCESSOR_NUMBER &expected) {
+  PROCESSOR_NUMBER current = {};
+  KeGetCurrentProcessorNumberEx(&current);
+  return current.Group == expected.Group && current.Number == expected.Number;
+}
+
+// A stale or unreachable affinity leaves the recorded owner outstanding.
+static bool VmpBindProcessor(const PROCESSOR_NUMBER &processor,
+                             GROUP_AFFINITY *previous) {
+  if (processor.Number >= sizeof(KAFFINITY) * CHAR_BIT) {
+    return false;
+  }
+  GROUP_AFFINITY affinity = {};
+  affinity.Group = processor.Group;
+  affinity.Mask = static_cast<KAFFINITY>(1) << processor.Number;
+  if ((KeQueryGroupAffinity(affinity.Group) & affinity.Mask) == 0) {
+    return false;
+  }
+  KeSetSystemGroupAffinityThread(&affinity, previous);
+  if (!VmpIsCurrentProcessor(processor)) {
+    KeRevertToUserGroupAffinityThread(previous);
+    return false;
+  }
+  return true;
+}
+
+_Use_decl_annotations_ NTSTATUS VmStartSession(VmSession *session) {
+  PAGED_CODE()
+
+  if (session->processor_count != 0) {
+    return STATUS_INVALID_DEVICE_STATE;
+  }
+  const auto initial_affinity = KeQueryGroupAffinity(0);
+  const auto count = KeQueryActiveProcessorCountEx(ALL_PROCESSOR_GROUPS);
+  // The monitored-view arrays use dense systemwide indexes on the supported build.
+  if (count == 0 || count > VmSession::kCapacity || KeQueryActiveGroupCount() != 1) {
+    return STATUS_NOT_SUPPORTED;
+  }
+  if (VmpIsHyperPlatformInstalled() || !VmpIsVmxAvailable()) {
+    return STATUS_HV_FEATURE_UNAVAILABLE;
+  }
+  const auto shared_data = VmpInitializeSharedData();
+  if (!shared_data) {
+    return STATUS_MEMORY_NOT_ALLOCATED;
+  }
+  EptInitializeMtrrEntries();
+
+  NTSTATUS status = STATUS_SUCCESS;
+  for (ULONG index = 0; index < count; ++index) {
+    PROCESSOR_NUMBER number = {};
+    status = KeGetProcessorNumberFromIndex(index, &number);
+    if (!NT_SUCCESS(status)) {
+      break;
+    }
+    GROUP_AFFINITY previous = {};
+    if (!VmpBindProcessor(number, &previous)) {
+      status = STATUS_DEVICE_NOT_READY;
+      break;
+    }
+    auto &owner = session->processors[session->processor_count];
+    owner.number = number;
+    status = VmpStartVmOnCurrentCpu(shared_data, &owner);
+    if (owner.state != VmProcessorState::kUnowned) {
+      ++session->processor_count;
+    }
+    KeRevertToUserGroupAffinityThread(&previous);
+    if (!NT_SUCCESS(status)) {
+      break;
+    }
+  }
+  VmpFreeSharedData(shared_data);
+  if (NT_SUCCESS(status) && (KeQueryActiveGroupCount() != 1 ||
+                            KeQueryGroupAffinity(0) != initial_affinity)) {
+    return STATUS_DEVICE_NOT_READY;
+  }
+  return status;
+}
+
+_Use_decl_annotations_ NTSTATUS VmStopSessionProcessor(VmProcessorOwner *owner) {
+  PAGED_CODE()
+
+  if (owner->state != VmProcessorState::kVmxGuest &&
+      owner->state != VmProcessorState::kVmxRoot) {
+    return STATUS_INVALID_DEVICE_STATE;
+  }
+  GROUP_AFFINITY previous = {};
+  if (!VmpBindProcessor(owner->number, &previous)) {
+    return STATUS_DEVICE_NOT_READY;
+  }
+
+  NTSTATUS status = STATUS_SUCCESS;
+  if (owner->state == VmProcessorState::kVmxRoot) {
+    // Failed VMLAUNCH leaves the caller outside the guest; it cannot use VMCALL.
+    if (AsmVmxOff()) {
+      __writecr4(owner->native_cr4);
+      __writecr0(owner->native_cr0);
+    } else {
+      status = STATUS_HV_OPERATION_FAILED;
+    }
+  } else {
+    auto *const data = owner->data;
+    InterlockedExchange(&data->stop_state, static_cast<LONG>(VmStopState::kArmed));
+    status = UtilVmCall(HypercallNumber::kTerminateVmm, nullptr);
+    const auto prepared = InterlockedExchange(
+        &data->stop_state, static_cast<LONG>(VmStopState::kIdle));
+    if (NT_SUCCESS(status)) {
+      if (prepared != static_cast<LONG>(VmStopState::kPrepared) ||
+          !VmpIsCurrentProcessor(owner->number)) {
+        status = STATUS_INVALID_DEVICE_STATE;
+      } else {
+        Cr4 cr4 = {data->stop_guest_cr4};
+        cr4.fields.vmxe = false;
+        __writecr4(cr4.all);
+        __writecr0(data->stop_guest_cr0);
+      }
+    }
+  }
+  if (NT_SUCCESS(status)) {
+    owner->state = VmProcessorState::kRetired;
+  }
+  KeRevertToUserGroupAffinityThread(&previous);
+  return status;
+}
+
+_Use_decl_annotations_ NTSTATUS VmReleaseSession(VmSession *session) {
+  PAGED_CODE()
+
+  for (ULONG index = 0; index < session->processor_count; ++index) {
+    if (session->processors[index].state != VmProcessorState::kRetired) {
+      return STATUS_DEVICE_BUSY;
+    }
+  }
+  for (ULONG index = 0; index < session->processor_count; ++index) {
+    auto &owner = session->processors[index];
+    VmpFreeProcessorData(owner.data);
+    owner = {};
+  }
+  session->processor_count = 0;
+  return STATUS_SUCCESS;
 }
 
 // Checks if the system supports virtualization
@@ -262,6 +416,8 @@ _Use_decl_annotations_ static SharedProcessorData *VmpInitializeSharedData() {
   }
   shared_data->io_bitmap_a = io_bitmaps;
   shared_data->io_bitmap_b = io_bitmaps + PAGE_SIZE;
+  // The initializer owns a reference even before the first CPU allocates.
+  shared_data->reference_count = 1;
   return shared_data;
 }
 
@@ -319,9 +475,18 @@ _Use_decl_annotations_ static UCHAR *VmpBuildIoBitmaps() {
 _Use_decl_annotations_ static NTSTATUS VmpStartVm(void *context) {
   PAGED_CODE()
 
+  return VmpStartVmOnCurrentCpu(static_cast<SharedProcessorData *>(context),
+                               nullptr);
+}
+
+_Use_decl_annotations_ static NTSTATUS VmpStartVmOnCurrentCpu(
+    SharedProcessorData *shared_data, VmProcessorOwner *owner) {
+  PAGED_CODE()
+
   HYPERPLATFORM_LOG_INFO("Initializing VMX for the processor %lu.",
                          KeGetCurrentProcessorNumberEx(nullptr));
-  const auto ok = AsmInitializeVm(VmpInitializeVm, context);
+  VmStartContext context = {shared_data, owner};
+  const auto ok = AsmInitializeVm(VmpInitializeVm, &context);
   // hypermon: the cpuid-stealth feature intentionally removes the stock
   // 0x40000001 interface signature, so VmpIsHyperPlatformInstalled() cannot
   // detect this VMM anymore and the stock NT_ASSERT below would fire on every
@@ -329,6 +494,9 @@ _Use_decl_annotations_ static NTSTATUS VmpStartVm(void *context) {
   // meaningful invariant under stealth, so the assert is dropped.
   if (!ok) {
     return STATUS_UNSUCCESSFUL;
+  }
+  if (owner) {
+    owner->state = VmProcessorState::kVmxGuest;
   }
   HYPERPLATFORM_LOG_INFO("Initialized successfully.");
   return STATUS_SUCCESS;
@@ -341,8 +509,8 @@ _Use_decl_annotations_ static void VmpInitializeVm(
     void *context) {
   PAGED_CODE()
 
-  const auto shared_data = static_cast<SharedProcessorData *>(context);
-  if (!shared_data) {
+  const auto start = static_cast<const VmStartContext *>(context);
+  if (!start || !start->shared_data) {
     return;
   }
 
@@ -353,7 +521,7 @@ _Use_decl_annotations_ static void VmpInitializeVm(
     return;
   }
   RtlZeroMemory(processor_data, sizeof(ProcessorData));
-  processor_data->shared_data = shared_data;
+  processor_data->shared_data = start->shared_data;
   InterlockedIncrement(&processor_data->shared_data->reference_count);
 
   // Set up EPT
@@ -465,10 +633,20 @@ _Use_decl_annotations_ static void VmpInitializeVm(
   HYPERPLATFORM_LOG_DEBUG("guest_inst_pointer    = %p",
                           reinterpret_cast<void *>(guest_instruction_pointer));
 
-  // Set up VMCS
+  const auto native_cr0 = __readcr0();
+  const auto native_cr4 = __readcr4();
+  const auto owner = start->owner;
   if (!VmpEnterVmxMode(processor_data)) {
+    __writecr4(native_cr4);
+    __writecr0(native_cr0);
     VmpFreeProcessorData(processor_data);
     return;
+  }
+  if (owner) {
+    owner->state = VmProcessorState::kVmxRoot;
+    owner->data = processor_data;
+    owner->native_cr0 = native_cr0;
+    owner->native_cr4 = native_cr4;
   }
   if (!VmpInitializeVmcs(processor_data)) {
     goto Exit;
@@ -485,7 +663,17 @@ _Use_decl_annotations_ static void VmpInitializeVm(
   // jumps to an address specified by guest_instruction_pointer.
 
 Exit:;
-  __vmx_off();
+  if (owner) {
+    if (!AsmVmxOff()) {
+      return;
+    }
+    __writecr4(native_cr4);
+    __writecr0(native_cr0);
+    owner->state = VmProcessorState::kUnowned;
+    owner->data = nullptr;
+  } else {
+    __vmx_off();
+  }
   VmpFreeProcessorData(processor_data);
 }
 
@@ -1009,35 +1197,34 @@ _Use_decl_annotations_ static void VmpFreeProcessorData(
     EptTermination(processor_data->ept_data);
   }
 
-  VmpFreeSharedData(processor_data);
+  VmpFreeSharedData(processor_data->shared_data);
 
   ExFreePoolWithTag(processor_data, kHyperPlatformCommonPoolTag);
 }
 
 // Decrement reference count of shared data and free it if no reference
 _Use_decl_annotations_ static void VmpFreeSharedData(
-    ProcessorData *processor_data) {
+    SharedProcessorData *shared_data) {
   PAGED_CODE()
 
-  if (!processor_data->shared_data) {
+  if (!shared_data) {
     return;
   }
 
-  if (InterlockedDecrement(&processor_data->shared_data->reference_count) !=
-      0) {
+  if (InterlockedDecrement(&shared_data->reference_count) != 0) {
     return;
   }
 
   HYPERPLATFORM_LOG_DEBUG("Freeing shared data...");
-  if (processor_data->shared_data->io_bitmap_a) {
-    ExFreePoolWithTag(processor_data->shared_data->io_bitmap_a,
+  if (shared_data->io_bitmap_a) {
+    ExFreePoolWithTag(shared_data->io_bitmap_a,
                       kHyperPlatformCommonPoolTag);
   }
-  if (processor_data->shared_data->msr_bitmap) {
-    ExFreePoolWithTag(processor_data->shared_data->msr_bitmap,
+  if (shared_data->msr_bitmap) {
+    ExFreePoolWithTag(shared_data->msr_bitmap,
                       kHyperPlatformCommonPoolTag);
   }
-  ExFreePoolWithTag(processor_data->shared_data, kHyperPlatformCommonPoolTag);
+  ExFreePoolWithTag(shared_data, kHyperPlatformCommonPoolTag);
 }
 
 // Tests if HyperPlatform is already installed

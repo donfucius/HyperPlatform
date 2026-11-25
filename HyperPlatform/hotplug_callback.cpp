@@ -32,6 +32,7 @@ extern "C" {
 //
 
 static PROCESSOR_CALLBACK_FUNCTION HotplugCallbackpCallbackRoutine;
+static PROCESSOR_CALLBACK_FUNCTION HotplugCallbackpFixedTopology;
 
 #if defined(ALLOC_PRAGMA)
 #pragma alloc_text(INIT, HotplugCallbackInitialization)
@@ -52,11 +53,12 @@ static PVOID g_hpp_callback_handle = nullptr;
 //
 
 // Registers power callback
-_Use_decl_annotations_ NTSTATUS HotplugCallbackInitialization() {
+_Use_decl_annotations_ NTSTATUS HotplugCallbackInitialization(bool fixed_topology) {
   PAGED_CODE()
 
   auto callback_handle = KeRegisterProcessorChangeCallback(
-      HotplugCallbackpCallbackRoutine, nullptr, 0);
+      fixed_topology ? HotplugCallbackpFixedTopology : HotplugCallbackpCallbackRoutine,
+      nullptr, 0);
   if (!callback_handle) {
     return STATUS_UNSUCCESSFUL;
   }
@@ -71,6 +73,17 @@ _Use_decl_annotations_ void HotplugCallbackTermination() {
 
   if (g_hpp_callback_handle) {
     KeDeregisterProcessorChangeCallback(g_hpp_callback_handle);
+    g_hpp_callback_handle = nullptr;
+  }
+}
+
+_Use_decl_annotations_ static void HotplugCallbackpFixedTopology(
+    PVOID callback_context, PKE_PROCESSOR_CHANGE_NOTIFY_CONTEXT change_context,
+    PNTSTATUS operation_status) {
+  UNREFERENCED_PARAMETER(callback_context);
+  if (change_context->State == KeProcessorAddStartNotify &&
+      NT_SUCCESS(*operation_status)) {
+    *operation_status = STATUS_NOT_SUPPORTED;
   }
 }
 
