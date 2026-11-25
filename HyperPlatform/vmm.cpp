@@ -208,7 +208,8 @@ _Use_decl_annotations_ bool __stdcall VmmVmExitHandler(VmmInitialStack *stack) {
       stack->gp_regs.cx == static_cast<ULONG_PTR>(HypercallNumber::kTerminateVmm) &&
       stack->gp_regs.dx == 0 &&
       VmExitInformation{static_cast<ULONG32>(UtilVmRead(VmcsField::kVmExitReason))}.fields.reason ==
-          VmxExitReason::kVmcall && VmmpGetGuestCpl() == 0) {
+          VmxExitReason::kVmcall && VmmpGetGuestCpl() == 0 &&
+      !hypermon::interrupt_replay::HasPending(owner->interrupt_replay)) {
     // Checked stop uses the nonpaged owner and architectural state without
     // copying to a guest-provided address or entering generic dispatch.
     GuestContext guest_context = {stack, UtilVmRead(VmcsField::kGuestRflags),
@@ -261,6 +262,33 @@ _Use_decl_annotations_ bool __stdcall VmmVmExitHandler(VmmInitialStack *stack) {
   }
   VmmpHandleVmExit(&guest_context);
 
+  auto &replay = owner->interrupt_replay;
+  if (guest_context.vm_continue &&
+      (hypermon::interrupt_replay::HasPending(replay) || replay.owns_window)) {
+    const auto entry =
+        static_cast<unsigned int>(UtilVmRead(VmcsField::kVmEntryIntrInfoField));
+    constexpr auto kInterruptEnabled = 1U << 9;
+    constexpr auto kInterruptShadow = 3U;
+    constexpr auto kHalted = 1U;
+    const auto ready =
+        (UtilVmRead(VmcsField::kGuestRflags) & kInterruptEnabled) != 0 &&
+        (UtilVmRead(VmcsField::kGuestInterruptibilityInfo) & kInterruptShadow) == 0 &&
+        UtilVmRead(VmcsField::kGuestActivityState) <= kHalted;
+    const auto write_entry = [](const unsigned int value) {
+      return UtilVmWrite(VmcsField::kVmEntryIntrInfoField, value) == VmxStatus::kOk;
+    };
+    // An unsuccessful write leaves the vector owed for a later eligible entry.
+    hypermon::interrupt_replay::PrepareEntry(replay, entry, ready, write_entry);
+    if (hypermon::interrupt_replay::HasPending(replay) || replay.owns_window) {
+      const auto controls =
+          static_cast<unsigned int>(UtilVmRead(VmcsField::kCpuBasedVmExecControl));
+      const auto write_primary = [](const unsigned int value) {
+        return UtilVmWrite(VmcsField::kCpuBasedVmExecControl, value) == VmxStatus::kOk;
+      };
+      hypermon::interrupt_replay::UpdateWindow(replay, controls, write_primary);
+    }
+  }
+
   // See: Guidelines for Use of the INVVPID Instruction, and Guidelines for Use
   // of the INVEPT Instruction
   if (!guest_context.vm_continue) {
@@ -311,7 +339,23 @@ _Use_decl_annotations_ static void VmmpHandleVmExit(
     }
   }
 
+  if (exit_reason.fields.reason == VmxExitReason::kEptViolation ||
+      exit_reason.fields.reason == VmxExitReason::kExceptionOrNmi) {
+    // An indirect exit can interrupt an already acknowledged physical event.
+    // Preserve it before the translation or exception handler prepares entry.
+    hypermon::interrupt_replay::Observe(
+        guest_context->stack->processor_data->interrupt_replay,
+        static_cast<unsigned int>(UtilVmRead(VmcsField::kIdtVectoringInfoField)));
+  }
   switch (exit_reason.fields.reason) {
+    case VmxExitReason::kPendingInterrupt: {
+      const auto &replay =
+          guest_context->stack->processor_data->interrupt_replay;
+      if (!hypermon::interrupt_replay::HasPending(replay) && !replay.owns_window) {
+        VmmpHandleUnexpectedExit(guest_context);
+      }
+      break;
+    }
     case VmxExitReason::kExceptionOrNmi:
       VmmpHandleException(guest_context);
       break;
@@ -1330,7 +1374,9 @@ _Use_decl_annotations_ static void VmmpHandleVmCall(
   switch (hypercall_number) {
     case HypercallNumber::kTerminateVmm:
       // Unloading requested. This VMCALL is allowed to execute only from CPL=0
-      if (context && VmmpGetGuestCpl() == 0) {
+      if (context && VmmpGetGuestCpl() == 0 &&
+          !hypermon::interrupt_replay::HasPending(
+              guest_context->stack->processor_data->interrupt_replay)) {
         VmmpHandleVmCallTermination(guest_context, context);
       } else {
         VmmpIndicateUnsuccessfulVmcall(guest_context);

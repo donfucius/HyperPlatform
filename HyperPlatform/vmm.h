@@ -10,6 +10,7 @@
 
 #include <ntddk.h>
 #include "ia32_type.h"  // hypermon: GpRegisters for the VMCALL consumer handler
+#include "hypermon_external_replay.h"
 
 ////////////////////////////////////////////////////////////////////////////////
 //
@@ -48,6 +49,7 @@ struct ProcessorData {
   volatile LONG stop_state;
   ULONG_PTR stop_guest_cr0;
   ULONG_PTR stop_guest_cr4;
+  hypermon::interrupt_replay::State interrupt_replay;
 };
 
 enum class VmStopState : LONG { kIdle, kArmed, kPrepared };
