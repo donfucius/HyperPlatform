@@ -10,7 +10,7 @@
 
 #include <ntddk.h>
 #include "ia32_type.h"  // hypermon: GpRegisters for the VMCALL consumer handler
-#include "hypermon_external_replay.h"
+#include "external_interrupt_replay.h"
 
 ////////////////////////////////////////////////////////////////////////////////
 //
